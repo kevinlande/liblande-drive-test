@@ -54,6 +54,10 @@
   <div class="card">
     <h2 style="margin-top:0">Results</h2>
     <table id="results"><tr><td>Nothing yet</td><td></td></tr></table>
+    <h2>One file, directly</h2>
+    <p class="muted">A link to a PDF in the folder that BibDesk filed (in Google Drive: right-click it, Share, Copy link). This tries to open and read it directly, without listing the folder.</p>
+    <div class="row"><input type="text" id="fileLink" placeholder="https://drive.google.com/file/d/&hellip;" autocomplete="off" spellcheck="false"><button id="tryFile" disabled>Try this file</button></div>
+    <p id="fileResult"></p>
     <div class="row" style="margin-top:10px"><button id="write" disabled>Try writing (makes, then deletes, one small file in the folder)</button></div>
   </div>
 
@@ -164,6 +168,7 @@
     $('#pick').disabled = !(token && pickerReady && store.get('key', ''));
     $('#again').disabled = !(token && store.get('folder', null));
     $('#write').disabled = !(token && store.get('folder', null));
+    $('#tryFile').disabled = !token;
     const f = store.get('folder', null);
     if (f) $('#folderName').textContent = 'Chosen: ' + f.name + ' (' + f.id + ')';
   }
@@ -242,6 +247,27 @@
     }
     show(rows);
   }
+
+  // One file by its link: its details, then its first bytes.
+  $('#tryFile').onclick = async () => {
+    const v = $('#fileLink').value.trim();
+    const m = v.match(/\/d\/([\w-]{20,})/) || v.match(/[?&]id=([\w-]{20,})/) || v.match(/^([\w-]{20,})$/);
+    if (!m) { $('#fileResult').innerHTML = '<span class="bad">That doesn\u2019t look like a Drive link.</span>'; return; }
+    const id = m[1];
+    let out = '';
+    try {
+      const f = await drive(`files/${id}?fields=id,name,parents,isAppAuthorized,capabilities(canEdit,canDownload)&supportsAllDrives=true`);
+      out += `<span class="good">Opened: ${f.name}</span> <span class="muted">(app-authorized: ${f.isAppAuthorized}, can edit: ${f.capabilities && f.capabilities.canEdit})</span><br>`;
+      const r = await fetch(API + 'files/' + id + '?alt=media', { headers: { Authorization: 'Bearer ' + token, Range: 'bytes=0-1023' } });
+      const b = new Uint8Array(await r.arrayBuffer());
+      out += r.ok ? `<span class="good">Read: ${b.length} bytes, starts ${JSON.stringify(String.fromCharCode(...b.slice(0, 5)))}</span>` : `<span class="bad">Couldn\u2019t read it: ${r.status}</span>`;
+      log(`one file ${f.name}: opened (isAppAuthorized ${f.isAppAuthorized}, canEdit ${f.capabilities && f.capabilities.canEdit}); read ${r.ok ? 'ok ' + b.length + ' bytes' : 'failed ' + r.status}`);
+    } catch (e) {
+      out += `<span class="bad">Couldn\u2019t open it: ${e.message}</span>`;
+      log('one file ' + id + ': could not open: ' + e.message);
+    }
+    $('#fileResult').innerHTML = out;
+  };
 
   // Writing: a small file made in the folder, then deleted.
   $('#write').onclick = async () => {
