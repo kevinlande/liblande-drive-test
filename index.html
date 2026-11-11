@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LibLande folder-access test</title>
+<style>
+  :root { --bg: #f6f8f7; --panel: #fff; --line: #d8dfdc; --text: #1b2321; --muted: #5d6a66; --accent: #1f6b5c; --soft: #dcebe6; --bad: #b42318; --good: #12763f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1f2322; --panel: #262b2a; --line: #3a4341; --text: #e2e8e5; --muted: #a9b5b1; --accent: #62b8a1; --soft: #24433b; --bad: #f97066; --good: #5fd08b; } }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 22px 0 8px; }
+  p { margin: 6px 0; }
+  .muted { color: var(--muted); font-size: 13.5px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: inherit; font-size: 14px; padding: 7px 14px; border-radius: 18px; border: 1px solid var(--line); background: var(--bg); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=text] { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); flex: 1 1 260px; min-width: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  td { padding: 5px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+  td:first-child { color: var(--muted); width: 46%; }
+  .good { color: var(--good); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  #log { font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; color: var(--muted); max-height: 280px; overflow: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Folder-access test</h1>
+  <p class="muted">Does choosing a folder in Google's picker let an app with only the limited Drive permission (<code>drive.file</code>) see everything in it, including files added later? This page only reads, unless you press "Try writing".</p>
+
+  <div class="card">
+    <h2 style="margin-top:0">1. Picker key</h2>
+    <p class="muted">An API key from the LibLande Google Cloud project, with the Google Picker API turned on. Kept only in this browser.</p>
+    <div class="row"><input type="text" id="key" placeholder="API key" autocomplete="off" spellcheck="false"><button id="saveKey">Save</button></div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">2. Sign in, with the limited permission only</h2>
+    <div class="row"><button class="primary" id="signIn">Sign in to Google</button><span id="who" class="muted"></span></div>
+    <p id="scopeNote" class="muted"></p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">3. Choose a folder</h2>
+    <p class="muted">Choose your Papers folder (BibDesk's PDFs). For comparison, try a folder LibLande has never touched too.</p>
+    <div class="row"><button class="primary" id="pick" disabled>Choose a folder&hellip;</button><button id="again" disabled>Check the chosen folder again</button></div>
+    <p id="folderName" class="muted"></p>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Results</h2>
+    <table id="results"><tr><td>Nothing yet</td><td></td></tr></table>
+    <div class="row" style="margin-top:10px"><button id="write" disabled>Try writing (makes, then deletes, one small file in the folder)</button></div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Log</h2>
+    <div class="row" style="margin-bottom:8px"><button id="copyLog">Copy the log</button><button id="clearLog">Clear</button></div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script src="https://apis.google.com/js/api.js" async></script>
+<script>
+(() => {
+  'use strict';
+  // The LibLande project: its client and its number (the picker's app ID).
+  const CLIENT_ID = '789682218462-98mjugngb46ttd01ucp9dcj71ufspjgn.apps.googleusercontent.com';
+  const APP_ID = '789682218462';
+  const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+  const API = 'https://www.googleapis.com/drive/v3/';
+  const FOLDER = 'application/vnd.google-apps.folder';
+  const $ = s => document.querySelector(s);
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem('dft.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem('dft.' + k, JSON.stringify(v)); } catch (e) {} },
+  };
+
+  /* ---- log, kept between visits */
+  let lines = store.get('log', []);
+  const showLog = () => { $('#log').textContent = lines.join('\n'); $('#log').scrollTop = 1e9; };
+  function log(s) {
+    const t = new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    lines.push(t + '  ' + s);
+    if (lines.length > 400) lines = lines.slice(-400);
+    store.set('log', lines);
+    showLog();
+  }
+  showLog();
+  $('#copyLog').onclick = () => navigator.clipboard.writeText(lines.join('\n')).then(() => log('(log copied)'));
+  $('#clearLog').onclick = () => { lines = []; store.set('log', lines); showLog(); };
+
+  /* ---- the key */
+  $('#key').value = store.get('key', '');
+  $('#saveKey').onclick = () => { store.set('key', $('#key').value.trim()); log('key saved'); ready(); };
+
+  /* ---- sign-in */
+  let token = null, client = null;
+  function signIn() {
+    if (!window.google || !google.accounts) { log('Google sign-in script not loaded yet'); return; }
+    if (!client) client = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID, scope: SCOPE,
+      // (Not the full Drive permission LibLande was given before: only this one.)
+      include_granted_scopes: false,
+      callback: async resp => {
+        if (resp.error) { log('sign-in error: ' + resp.error); return; }
+        token = resp.access_token;
+        log('signed in; granted: ' + (resp.scope || '?'));
+        await checkScope();
+        ready();
+      },
+      error_callback: e => log('sign-in did not finish: ' + (e && e.type)),
+    });
+    client.requestAccessToken({ prompt: 'consent' });
+  }
+  $('#signIn').onclick = signIn;
+
+  // The token's real permissions, from Google: the test only means
+  // something if full Drive access isn't among them.
+  async function checkScope() {
+    try {
+      const info = await (await fetch('https://oauth2.googleapis.com/tokeninfo?access_token=' + encodeURIComponent(token))).json();
+      const scopes = String(info.scope || '').split(' ');
+      const full = scopes.some(s => /\/auth\/drive(\.readonly)?$/.test(s));
+      $('#scopeNote').innerHTML = full
+        ? '<span class="bad">This token has full Drive access, so the test won’t show anything. Remove LibLande’s access at myaccount.google.com › Security › Third-party apps, then sign in here again.</span>'
+        : '<span class="good">Limited permission only (drive.file).</span>';
+      $('#who').textContent = info.email || '';
+      log('token scopes: ' + scopes.join(', ') + (full ? '  << FULL DRIVE: test invalid' : ''));
+    } catch (e) { log('could not check the token: ' + e.message); }
+  }
+
+  /* ---- Drive */
+  async function drive(path) {
+    const r = await fetch(API + path, { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) { const t = await r.text(); throw new Error(r.status + ' ' + t.slice(0, 200)); }
+    return r.json();
+  }
+  // Every file in a folder this app can see (all pages).
+  async function listIn(id, fields) {
+    let out = [], page = '';
+    do {
+      const q = encodeURIComponent(`'${id}' in parents and trashed = false`);
+      const j = await drive(`files?q=${q}&pageSize=1000&fields=nextPageToken,files(${fields})&supportsAllDrives=true&includeItemsFromAllDrives=true` + (page ? '&pageToken=' + page : ''));
+      out = out.concat(j.files || []);
+      page = j.nextPageToken || '';
+    } while (page);
+    return out;
+  }
+
+  /* ---- the picker */
+  let pickerReady = false;
+  function loadPicker() {
+    if (pickerReady || !window.gapi) return;
+    gapi.load('picker', () => { pickerReady = true; log('picker loaded'); ready(); });
+  }
+  const iv = setInterval(() => { if (window.gapi) { clearInterval(iv); loadPicker(); } }, 200);
+  function ready() {
+    $('#pick').disabled = !(token && pickerReady && store.get('key', ''));
+    $('#again').disabled = !(token && store.get('folder', null));
+    $('#write').disabled = !(token && store.get('folder', null));
+    const f = store.get('folder', null);
+    if (f) $('#folderName').textContent = 'Chosen: ' + f.name + ' (' + f.id + ')';
+  }
+  $('#pick').onclick = () => {
+    const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+      .setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes(FOLDER);
+    const p = new google.picker.PickerBuilder()
+      .addView(view)
+      .setOAuthToken(token)
+      .setDeveloperKey(store.get('key', ''))
+      .setAppId(APP_ID)
+      .setTitle('Choose a folder')
+      .setCallback(d => {
+        if (d.action !== google.picker.Action.PICKED) return;
+        const doc = d.docs[0];
+        store.set('folder', { id: doc.id, name: doc.name });
+        log('picked folder: ' + doc.name + ' (' + doc.id + ')');
+        ready();
+        check();
+      })
+      .build();
+    p.setVisible(true);
+  };
+  $('#again').onclick = () => check();
+
+  /* ---- the checks */
+  function show(rows) {
+    $('#results').innerHTML = rows.map(([k, v, cls]) => `<tr><td>${k}</td><td${cls ? ` class="${cls}"` : ''}>${v}</td></tr>`).join('');
+  }
+  async function check() {
+    const f = store.get('folder', null);
+    if (!f || !token) return;
+    const rows = [];
+    show([['Checking…', '']]);
+    try {
+      // 1. The folder itself.
+      try { const m = await drive(`files/${f.id}?fields=id,name,isAppAuthorized&supportsAllDrives=true`); rows.push(['The folder itself', 'visible' + (m.isAppAuthorized ? ' (app-authorized)' : ''), 'good']); }
+      catch (e) { rows.push(['The folder itself', 'not visible: ' + e.message, 'bad']); }
+      // 2. What's directly in it.
+      const kids = await listIn(f.id, 'id,name,mimeType,createdTime,isAppAuthorized');
+      const sub = kids.filter(k => k.mimeType === FOLDER), files = kids.filter(k => k.mimeType !== FOLDER);
+      rows.push(['Directly in it: files / folders', files.length + ' / ' + sub.length, kids.length ? 'good' : 'bad']);
+      // 3. Down through its folders (as BibDesk's author folders), up to 400 folders.
+      let all = files.slice(), seen = 0;
+      const queue = sub.slice();
+      while (queue.length && seen < 400) {
+        const s = queue.shift(); seen++;
+        const k2 = await listIn(s.id, 'id,name,mimeType,createdTime,isAppAuthorized');
+        k2.forEach(x => (x.mimeType === FOLDER ? queue.push(x) : all.push(x)));
+        if (seen % 25 === 0) show(rows.concat([['Looking through folders…', seen + ' so far, ' + all.length + ' files']]));
+      }
+      const pdfs = all.filter(x => /\.pdf$/i.test(x.name));
+      rows.push(['All the way down: files (PDFs)', all.length + ' (' + pdfs.length + ')' + (queue.length ? ', stopped after 400 folders' : ''), all.length ? 'good' : 'bad']);
+      const own = all.filter(x => x.isAppAuthorized).length;
+      rows.push(['Of those, the app made or was given', own + ' (the rest are visible through the folder)']);
+      // 4. The newest files: does one added since the pick show?
+      const newest = all.slice().sort((a, b) => b.createdTime.localeCompare(a.createdTime)).slice(0, 3);
+      rows.push(['Newest files visible', newest.map(x => x.name + ' <span class="muted">(' + new Date(x.createdTime).toLocaleString() + ')</span>').join('<br>') || 'none']);
+      // 5. Reading a file's contents.
+      const one = pdfs[0] || all[0];
+      if (one) {
+        try {
+          const r = await fetch(API + 'files/' + one.id + '?alt=media', { headers: { Authorization: 'Bearer ' + token, Range: 'bytes=0-1023' } });
+          const b = new Uint8Array(await r.arrayBuffer());
+          rows.push(['Reading a file (' + one.name + ')', r.ok ? 'worked: ' + b.length + ' bytes, starts ' + JSON.stringify(String.fromCharCode(...b.slice(0, 5))) : 'failed: ' + r.status, r.ok ? 'good' : 'bad']);
+        } catch (e) { rows.push(['Reading a file', 'failed: ' + e.message, 'bad']); }
+      }
+      // 6. Outside the folder: finding a file by name across Drive (as LibLande does now).
+      const q = encodeURIComponent("name = 'Bibliography.bib' and trashed = false");
+      const found = await drive(`files?q=${q}&fields=files(id,name,parents)`);
+      rows.push(['Finding Bibliography.bib by name, anywhere', (found.files || []).length ? 'found ' + found.files.length : 'not found (expected unless it is in the folder)']);
+      log(`check ${f.name}: direct ${files.length} files/${sub.length} folders; all ${all.length} files (${pdfs.length} PDFs), app-authorized ${own}; newest: ${newest.map(x => x.name + ' ' + x.createdTime).join('; ')}; by-name search found ${(found.files || []).length}`);
+    } catch (e) {
+      rows.push(['Error', e.message, 'bad']);
+      log('check failed: ' + e.message);
+    }
+    show(rows);
+  }
+
+  // Writing: a small file made in the folder, then deleted.
+  $('#write').onclick = async () => {
+    const f = store.get('folder', null);
+    try {
+      const meta = { name: 'liblande-access-test.txt', parents: [f.id] };
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+      form.append('file', new Blob(['test ' + new Date().toISOString()], { type: 'text/plain' }));
+      const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: form });
+      if (!r.ok) throw new Error(r.status + ' ' + (await r.text()).slice(0, 200));
+      const { id } = await r.json();
+      const d = await fetch(API + 'files/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } });
+      log('write test: made ' + id + ', ' + (d.ok ? 'deleted' : 'delete failed ' + d.status));
+      alert('Writing worked' + (d.ok ? ' (and the file is deleted).' : ', but deleting failed: delete liblande-access-test.txt by hand.'));
+    } catch (e) { log('write test failed: ' + e.message); alert('Writing failed: ' + e.message); }
+  };
+  ready();
+})();
+</script>
+</body>
+</html>
