@@ -54,6 +54,10 @@
   <div class="card">
     <h2 style="margin-top:0">Results</h2>
     <table id="results"><tr><td>Nothing yet</td><td></td></tr></table>
+    <h2>Many files, picked at once</h2>
+    <p class="muted">Google's picker with several files allowed. Try selecting many PDFs at once: a search, then shift-click or ⌘A, and see how many it takes. Then the page checks it can open each one.</p>
+    <div class="row"><button class="primary" id="pickFiles" disabled>Choose PDFs (all of Drive)&hellip;</button><button id="pickFilesIn" disabled>Choose PDFs, starting in the chosen folder&hellip;</button></div>
+    <p id="filesResult"></p>
     <h2>One file, directly</h2>
     <p class="muted">A link to a PDF in the folder that BibDesk filed (in Google Drive: right-click it, Share, Copy link). This tries to open and read it directly, without listing the folder.</p>
     <div class="row"><input type="text" id="fileLink" placeholder="https://drive.google.com/file/d/&hellip;" autocomplete="off" spellcheck="false"><button id="tryFile" disabled>Try this file</button></div>
@@ -169,6 +173,8 @@
     $('#again').disabled = !(token && store.get('folder', null));
     $('#write').disabled = !(token && store.get('folder', null));
     $('#tryFile').disabled = !token;
+    $('#pickFiles').disabled = !(token && pickerReady && store.get('key', ''));
+    $('#pickFilesIn').disabled = !(token && pickerReady && store.get('key', '') && store.get('folder', null));
     const f = store.get('folder', null);
     if (f) $('#folderName').textContent = 'Chosen: ' + f.name + ' (' + f.id + ')';
   }
@@ -246,6 +252,45 @@
       log('check failed: ' + e.message);
     }
     show(rows);
+  }
+
+  // Many files at once: how many the picker lets you choose, and whether
+  // the app can then open every one.
+  function pickFiles(parent) {
+    const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+      .setMimeTypes('application/pdf').setIncludeFolders(!!parent).setSelectFolderEnabled(false)
+      .setMode(google.picker.DocsViewMode.LIST);
+    if (parent) view.setParent(parent);
+    const p = new google.picker.PickerBuilder()
+      .addView(view)
+      .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+      .setMaxItems(5000)
+      .setOAuthToken(token)
+      .setDeveloperKey(store.get('key', ''))
+      .setAppId(APP_ID)
+      .setTitle('Choose PDFs')
+      .setCallback(d => { if (d.action === google.picker.Action.PICKED) checkPicked(d.docs || []); })
+      .build();
+    p.setVisible(true);
+  }
+  $('#pickFiles').onclick = () => pickFiles(null);
+  $('#pickFilesIn').onclick = () => { const f = store.get('folder', null); if (f) pickFiles(f.id); };
+  async function checkPicked(docs) {
+    const t0 = Date.now();
+    let ok = 0, bad = 0, firstBad = '';
+    const queue = docs.slice();
+    const out = () => { $('#filesResult').innerHTML = `Picked <b>${docs.length}</b>. Opened ${ok}` + (bad ? `, <span class="bad">couldn\u2019t open ${bad}</span>` : '') + (queue.length ? `, checking\u2026` : '.'); };
+    out();
+    await Promise.all(Array.from({ length: 6 }, async () => {
+      while (queue.length) {
+        const d = queue.shift();
+        try { await drive(`files/${d.id}?fields=id&supportsAllDrives=true`); ok++; }
+        catch (e) { bad++; if (!firstBad) firstBad = d.name + ': ' + e.message.slice(0, 60); }
+        if ((ok + bad) % 25 === 0) out();
+      }
+    }));
+    out();
+    log(`picked ${docs.length} files at once; opened ${ok}, failed ${bad}${firstBad ? ' (first: ' + firstBad + ')' : ''}; ${Math.round((Date.now() - t0) / 1000)} s to check`);
   }
 
   // One file by its link: its details, then its first bytes.
