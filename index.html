@@ -290,7 +290,20 @@
       while (queue.length) {
         const d = queue.shift();
         try { await drive(`files/${d.id}?fields=id&supportsAllDrives=true`); ok++; }
-        catch (e) { bad++; if (!firstBad) firstBad = d.name + ': ' + e.message.slice(0, 60); }
+        catch (e) {
+          // Not found: again after a moment, then with the file's resource
+          // key (older link-shared files need it), to see which helps.
+          const rk = d.resourceKey || d[google.picker.Document.RESOURCE_KEY] || '';
+          await new Promise(r => setTimeout(r, 3000));
+          let how = '';
+          try { await drive(`files/${d.id}?fields=id&supportsAllDrives=true`); how = 'after waiting'; } catch (e2) {}
+          if (!how && rk) {
+            const r = await fetch(API + `files/${d.id}?fields=id,resourceKey&supportsAllDrives=true`, { headers: { Authorization: 'Bearer ' + token, 'X-Goog-Drive-Resource-Keys': d.id + '/' + rk } });
+            if (r.ok) how = 'with its resource key';
+          }
+          if (how) { ok++; log(`  ${d.name}: opened ${how}`); }
+          else { bad++; log(`  ${d.name}: not found (resource key: ${rk ? 'yes' : 'none'}; picker gave: ${Object.keys(d).join(',')})`); if (!firstBad) firstBad = d.name + ': ' + e.message.slice(0, 60); }
+        }
         if ((ok + bad) % 25 === 0) out();
       }
     }));
