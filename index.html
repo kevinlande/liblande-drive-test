@@ -105,8 +105,8 @@
     if (!window.google || !google.accounts) { log('Google sign-in script not loaded yet'); return; }
     if (!client) client = google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID, scope: SCOPE,
-      // (Not the full Drive permission LibLande was given before: only this one.)
-      include_granted_scopes: false,
+      // (Asking for only this permission. Google may still add the full
+      // Drive permission LibLande was given before: checkScope says so.)
       callback: async resp => {
         if (resp.error) { log('sign-in error: ' + resp.error); return; }
         token = resp.access_token;
